@@ -9,15 +9,16 @@ import fs from 'fs'
 import postcssrc from 'postcss-load-config'
 import { cosmiconfig } from 'cosmiconfig'
 import loadPlugins from 'postcss-load-config/src/plugins' // Little bit scary, looking at private/internal API
-import tailwindJit from './jit/processTailwindFeatures'
-import tailwindAot from './processTailwindFeatures'
+import tailwind from './processTailwindFeatures'
 import resolveConfigInternal from '../resolveConfig'
 import fastGlob from 'fast-glob'
 import getModuleDependencies from './lib/getModuleDependencies'
+import log from './util/log'
 import packageJson from '../package.json'
+import normalizePath from 'normalize-path'
 
 let env = {
-  DEBUG: process.env.DEBUG !== undefined,
+  DEBUG: process.env.DEBUG !== undefined && process.env.DEBUG !== '0',
 }
 
 // ---
@@ -86,7 +87,9 @@ function help({ message, usage, commands, options }) {
 
     console.log()
     console.log('Options:')
-    for (let { flags, description } of Object.values(groupedOptions)) {
+    for (let { flags, description, deprecated } of Object.values(groupedOptions)) {
+      if (deprecated) continue
+
       if (flags.length === 1) {
         console.log(
           ' '.repeat(indent + 4 /* 4 = "-i, ".length */),
@@ -126,7 +129,6 @@ let commands = {
   init: {
     run: init,
     args: {
-      '--jit': { type: Boolean, description: 'Initialize for JIT mode' },
       '--full': { type: Boolean, description: 'Initialize a full `tailwind.config.js` file' },
       '--postcss': { type: Boolean, description: 'Initialize a `postcss.config.js` file' },
       '-f': '--full',
@@ -139,8 +141,14 @@ let commands = {
       '--input': { type: String, description: 'Input file' },
       '--output': { type: String, description: 'Output file' },
       '--watch': { type: Boolean, description: 'Watch for changes and rebuild as needed' },
-      '--jit': { type: Boolean, description: 'Build using JIT mode' },
-      '--purge': { type: String, description: 'Content paths to use for removing unused classes' },
+      '--content': {
+        type: String,
+        description: 'Content paths to use for removing unused classes',
+      },
+      '--purge': {
+        type: String,
+        deprecated: true,
+      },
       '--postcss': {
         type: oneOf(String, Boolean),
         description: 'Load custom PostCSS configuration',
@@ -306,15 +314,6 @@ function init() {
     // Change colors import
     stubFile = stubFile.replace('../colors', 'tailwindcss/colors')
 
-    // --jit mode
-    if (args['--jit']) {
-      // Add jit mode
-      stubFile = stubFile.replace('module.exports = {', "module.exports = {\n  mode: 'jit',")
-
-      // Deleting variants
-      stubFile = stubFile.replace(/variants: {(.*)},\n  /gs, '')
-    }
-
     fs.writeFileSync(tailwindConfigLocation, stubFile, 'utf8')
 
     messages.push(`Created Tailwind CSS config file: ${path.basename(tailwindConfigLocation)}`)
@@ -353,6 +352,7 @@ async function build() {
   // TODO: Deprecate this in future versions
   if (!input && args['_'][1]) {
     console.error('[deprecation] Running tailwindcss without -i, please provide an input file.')
+    input = args['--input'] = args['_'][1]
   }
 
   if (input && !fs.existsSync((input = path.resolve(input)))) {
@@ -420,49 +420,35 @@ async function build() {
     let resolvedConfig = resolveConfigInternal(config)
 
     if (args['--purge']) {
-      resolvedConfig.purge = args['--purge'].split(/(?<!{[^}]+),/)
+      log.warn('purge-flag-deprecated', [
+        'The `--purge` flag has been deprecated.',
+        'Please use `--content` instead.',
+      ])
+      if (!args['--content']) {
+        args['--content'] = args['--purge']
+      }
     }
 
-    if (args['--jit']) {
-      resolvedConfig.mode = 'jit'
+    if (args['--content']) {
+      resolvedConfig.content.files = args['--content'].split(/(?<!{[^}]+),/)
     }
 
     return resolvedConfig
   }
 
-  function extractContent(config) {
-    let content = Array.isArray(config.purge) ? config.purge : config.purge.content
-
-    return content.concat(
-      (config.purge?.safelist ?? []).map((content) => {
-        if (typeof content === 'string') {
-          return { raw: content, extension: 'html' }
-        }
-
-        if (content instanceof RegExp) {
-          throw new Error(
-            "Values inside 'purge.safelist' can only be of type 'string', found 'regex'."
-          )
-        }
-
-        throw new Error(
-          `Values inside 'purge.safelist' can only be of type 'string', found '${typeof content}'.`
-        )
-      })
-    )
-  }
-
   function extractFileGlobs(config) {
-    return extractContent(config).filter((file) => {
-      // Strings in this case are files / globs. If it is something else,
-      // like an object it's probably a raw content object. But this object
-      // is not watchable, so let's remove it.
-      return typeof file === 'string'
-    })
+    return config.content.files
+      .filter((file) => {
+        // Strings in this case are files / globs. If it is something else,
+        // like an object it's probably a raw content object. But this object
+        // is not watchable, so let's remove it.
+        return typeof file === 'string'
+      })
+      .map((glob) => normalizePath(glob))
   }
 
   function extractRawContent(config) {
-    return extractContent(config).filter((file) => {
+    return config.content.files.filter((file) => {
       return typeof file === 'object' && file !== null
     })
   }
@@ -470,14 +456,14 @@ async function build() {
   function getChangedContent(config) {
     let changedContent = []
 
-    // Resolve globs from the purge config
+    // Resolve globs from the content config
     let globs = extractFileGlobs(config)
     let files = fastGlob.sync(globs)
 
     for (let file of files) {
       changedContent.push({
         content: fs.readFileSync(path.resolve(file), 'utf8'),
-        extension: path.extname(file),
+        extension: path.extname(file).slice(1),
       })
     }
 
@@ -493,26 +479,18 @@ async function build() {
     let config = resolveConfig()
     let changedContent = getChangedContent(config)
 
-    let tailwindPlugin =
-      config.mode === 'jit'
-        ? () => {
-            return {
-              postcssPlugin: 'tailwindcss',
-              Once(root, { result }) {
-                tailwindJit(({ createContext }) => {
-                  return () => {
-                    return createContext(config, changedContent)
-                  }
-                })(root, result)
-              },
+    let tailwindPlugin = () => {
+      return {
+        postcssPlugin: 'tailwindcss',
+        Once(root, { result }) {
+          tailwind(({ createContext }) => {
+            return () => {
+              return createContext(config, changedContent)
             }
-          }
-        : () => {
-            return {
-              postcssPlugin: 'tailwindcss',
-              plugins: [tailwindAot(() => config, configPath)],
-            }
-          }
+          })(root, result)
+        },
+      }
+    }
 
     tailwindPlugin.postcss = true
 
@@ -634,39 +612,31 @@ async function build() {
     async function rebuild(config) {
       env.DEBUG && console.time('Finished in')
 
-      let tailwindPlugin =
-        config.mode === 'jit'
-          ? () => {
-              return {
-                postcssPlugin: 'tailwindcss',
-                Once(root, { result }) {
-                  env.DEBUG && console.time('Compiling CSS')
-                  tailwindJit(({ createContext }) => {
-                    console.error()
-                    console.error('Rebuilding...')
+      let tailwindPlugin = () => {
+        return {
+          postcssPlugin: 'tailwindcss',
+          Once(root, { result }) {
+            env.DEBUG && console.time('Compiling CSS')
+            tailwind(({ createContext }) => {
+              console.error()
+              console.error('Rebuilding...')
 
-                    return () => {
-                      if (context !== null) {
-                        context.changedContent = changedContent.splice(0)
-                        return context
-                      }
+              return () => {
+                if (context !== null) {
+                  context.changedContent = changedContent.splice(0)
+                  return context
+                }
 
-                      env.DEBUG && console.time('Creating context')
-                      context = createContext(config, changedContent.splice(0))
-                      env.DEBUG && console.timeEnd('Creating context')
-                      return context
-                    }
-                  })(root, result)
-                  env.DEBUG && console.timeEnd('Compiling CSS')
-                },
+                env.DEBUG && console.time('Creating context')
+                context = createContext(config, changedContent.splice(0))
+                env.DEBUG && console.timeEnd('Creating context')
+                return context
               }
-            }
-          : () => {
-              return {
-                postcssPlugin: 'tailwindcss',
-                plugins: [tailwindAot(() => config, configPath)],
-              }
-            }
+            })(root, result)
+            env.DEBUG && console.timeEnd('Compiling CSS')
+          },
+        }
+      }
 
       tailwindPlugin.postcss = true
 
@@ -705,6 +675,13 @@ async function build() {
             let end = process.hrtime.bigint()
             console.error('Done in', (end - start) / BigInt(1e6) + 'ms.')
           })
+          .catch((err) => {
+            if (err.name === 'CssSyntaxError') {
+              console.error(err.toString())
+            } else {
+              console.error(err)
+            }
+          })
       }
 
       let css = input
@@ -723,6 +700,13 @@ async function build() {
 
     watcher = chokidar.watch([...contextDependencies, ...extractFileGlobs(config)], {
       ignoreInitial: true,
+      awaitWriteFinish:
+        process.platform === 'win32'
+          ? {
+              stabilityThreshold: 50,
+              pollInterval: 10,
+            }
+          : false,
     })
 
     let chain = Promise.resolve()
@@ -748,7 +732,7 @@ async function build() {
         chain = chain.then(async () => {
           changedContent.push({
             content: fs.readFileSync(path.resolve(file), 'utf8'),
-            extension: path.extname(file),
+            extension: path.extname(file).slice(1),
           })
 
           await rebuild(config)
@@ -760,7 +744,7 @@ async function build() {
       chain = chain.then(async () => {
         changedContent.push({
           content: fs.readFileSync(path.resolve(file), 'utf8'),
-          extension: path.extname(file),
+          extension: path.extname(file).slice(1),
         })
 
         await rebuild(config)
@@ -774,6 +758,9 @@ async function build() {
   }
 
   if (shouldWatch) {
+    /* Abort the watcher if stdin is closed to avoid zombie processes */
+    process.stdin.on('end', () => process.exit(0))
+    process.stdin.resume()
     startWatcher()
   } else {
     buildOnce()

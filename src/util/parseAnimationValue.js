@@ -2,7 +2,15 @@ const DIRECTIONS = new Set(['normal', 'reverse', 'alternate', 'alternate-reverse
 const PLAY_STATES = new Set(['running', 'paused'])
 const FILL_MODES = new Set(['none', 'forwards', 'backwards', 'both'])
 const ITERATION_COUNTS = new Set(['infinite'])
-const TIMINGS = new Set(['linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out'])
+const TIMINGS = new Set([
+  'linear',
+  'ease',
+  'ease-in',
+  'ease-out',
+  'ease-in-out',
+  'step-start',
+  'step-end',
+])
 const TIMING_FNS = ['cubic-bezier', 'steps']
 
 const COMMA = /\,(?![^(]*\))/g // Comma separator that is not located between brackets. E.g.: `cubiz-bezier(a, b, c)` these don't count.
@@ -12,9 +20,10 @@ const DIGIT = /^(\d+)$/
 
 export default function parseAnimationValue(input) {
   let animations = input.split(COMMA)
-  let result = animations.map((animation) => {
-    let result = {}
-    let parts = animation.trim().split(SPACE)
+  return animations.map((animation) => {
+    let value = animation.trim()
+    let result = { value }
+    let parts = value.split(SPACE)
     let seen = new Set()
 
     for (let part of parts) {
@@ -45,11 +54,15 @@ export default function parseAnimationValue(input) {
       } else if (!seen.has('DELAY') && TIME.test(part)) {
         result.delay = part
         seen.add('DELAY')
-      } else result.name = part
+      } else if (!seen.has('NAME')) {
+        result.name = part
+        seen.add('NAME')
+      } else {
+        if (!result.unknown) result.unknown = []
+        result.unknown.push(part)
+      }
     }
 
     return result
   })
-
-  return animations.length > 1 ? result : result[0]
 }

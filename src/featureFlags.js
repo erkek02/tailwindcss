@@ -1,19 +1,24 @@
-import _ from 'lodash'
 import chalk from 'chalk'
 import log from './util/log'
 
-const featureFlags = {
+let defaults = {
+  optimizeUniversalDefaults: true,
+}
+
+let featureFlags = {
   future: [],
-  experimental: [],
+  experimental: ['optimizeUniversalDefaults'],
 }
 
 export function flagEnabled(config, flag) {
   if (featureFlags.future.includes(flag)) {
-    return config.future === 'all' || _.get(config, ['future', flag], false)
+    return config.future === 'all' || (config?.future?.[flag] ?? defaults[flag] ?? false)
   }
 
   if (featureFlags.experimental.includes(flag)) {
-    return config.experimental === 'all' || _.get(config, ['experimental', flag], false)
+    return (
+      config.experimental === 'all' || (config?.experimental?.[flag] ?? defaults[flag] ?? false)
+    )
   }
 
   return false
@@ -24,7 +29,7 @@ function experimentalFlagsEnabled(config) {
     return featureFlags.experimental
   }
 
-  return Object.keys(_.get(config, 'experimental', {})).filter(
+  return Object.keys(config?.experimental ?? {}).filter(
     (flag) => featureFlags.experimental.includes(flag) && config.experimental[flag]
   )
 }
@@ -35,13 +40,13 @@ export function issueFlagNotices(config) {
   }
 
   if (experimentalFlagsEnabled(config).length > 0) {
-    const changes = experimentalFlagsEnabled(config)
+    let changes = experimentalFlagsEnabled(config)
       .map((s) => chalk.yellow(s))
       .join(', ')
 
-    log.warn([
+    log.warn('experimental-flags-enabled', [
       `You have enabled experimental features: ${changes}`,
-      'Experimental features are not covered by semver, may introduce breaking changes, and can change at any time.',
+      'Experimental features in Tailwind CSS are not covered by semver, may introduce breaking changes, and can change at any time.',
     ])
   }
 }

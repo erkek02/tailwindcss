@@ -1,67 +1,49 @@
-import createColor from 'color'
-import _ from 'lodash'
-
-function hasAlpha(color) {
-  return (
-    color.startsWith('rgba(') ||
-    color.startsWith('hsla(') ||
-    (color.startsWith('#') && color.length === 9) ||
-    (color.startsWith('#') && color.length === 5)
-  )
-}
-
-export function toRgba(color) {
-  const [r, g, b, a] = createColor(color).rgb().array()
-
-  return [r, g, b, a === undefined && hasAlpha(color) ? 1 : a]
-}
-
-export function toHsla(color) {
-  const [h, s, l, a] = createColor(color).hsl().array()
-
-  return [h, `${s}%`, `${l}%`, a === undefined && hasAlpha(color) ? 1 : a]
-}
+import { parseColor, formatColor } from './color'
 
 export function withAlphaValue(color, alphaValue, defaultValue) {
-  if (_.isFunction(color)) {
+  if (typeof color === 'function') {
     return color({ opacityValue: alphaValue })
   }
 
-  try {
-    const isHSL = color.startsWith('hsl')
-    const [i, j, k] = isHSL ? toHsla(color) : toRgba(color)
-    return `${isHSL ? 'hsla' : 'rgba'}(${i}, ${j}, ${k}, ${alphaValue})`
-  } catch {
+  let parsed = parseColor(color)
+
+  if (parsed === null) {
     return defaultValue
   }
+
+  return formatColor({ ...parsed, alpha: alphaValue })
 }
 
 export default function withAlphaVariable({ color, property, variable }) {
-  if (_.isFunction(color)) {
+  let properties = [].concat(property)
+  if (typeof color === 'function') {
     return {
       [variable]: '1',
-      [property]: color({ opacityVariable: variable, opacityValue: `var(${variable})` }),
+      ...Object.fromEntries(
+        properties.map((p) => {
+          return [p, color({ opacityVariable: variable, opacityValue: `var(${variable})` })]
+        })
+      ),
     }
   }
 
-  try {
-    const isHSL = color.startsWith('hsl')
+  const parsed = parseColor(color)
 
-    const [i, j, k, a] = isHSL ? toHsla(color) : toRgba(color)
+  if (parsed === null) {
+    return Object.fromEntries(properties.map((p) => [p, color]))
+  }
 
-    if (a !== undefined) {
-      return {
-        [property]: color,
-      }
-    }
+  if (parsed.alpha !== undefined) {
+    // Has an alpha value, return color as-is
+    return Object.fromEntries(properties.map((p) => [p, color]))
+  }
 
-    return {
-      [variable]: '1',
-      [property]: `${isHSL ? 'hsla' : 'rgba'}(${i}, ${j}, ${k}, var(${variable}))`,
-    }
-  } catch (error) {
-    return {
-      [property]: color,
-    }
+  return {
+    [variable]: '1',
+    ...Object.fromEntries(
+      properties.map((p) => {
+        return [p, formatColor({ ...parsed, alpha: `var(${variable})` })]
+      })
+    ),
   }
 }

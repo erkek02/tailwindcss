@@ -1,6 +1,13 @@
+import postcss from 'postcss'
+
 export default function transformThemeValue(themeSection) {
   if (['fontSize', 'outline'].includes(themeSection)) {
-    return (value) => (Array.isArray(value) ? value[0] : value)
+    return (value) => {
+      if (typeof value === 'function') value = value({})
+      if (Array.isArray(value)) value = value[0]
+
+      return value
+    }
   }
 
   if (
@@ -18,12 +25,28 @@ export default function transformThemeValue(themeSection) {
       'animation',
     ].includes(themeSection)
   ) {
-    return (value) => (Array.isArray(value) ? value.join(', ') : value)
+    return (value) => {
+      if (typeof value === 'function') value = value({})
+      if (Array.isArray(value)) value = value.join(', ')
+
+      return value
+    }
   }
 
-  if (themeSection === 'colors') {
-    return (value) => (typeof value === 'function' ? value({}) : value)
+  // For backwards compatibility reasons, before we switched to underscores
+  // instead of commas for arbitrary values.
+  if (['gridTemplateColumns', 'gridTemplateRows', 'objectPosition'].includes(themeSection)) {
+    return (value) => {
+      if (typeof value === 'function') value = value({})
+      if (typeof value === 'string') value = postcss.list.comma(value).join(' ')
+
+      return value
+    }
   }
 
-  return (value) => value
+  return (value) => {
+    if (typeof value === 'function') value = value({})
+
+    return value
+  }
 }

@@ -3,6 +3,8 @@ let $ = require('../../execute')
 let { css, html, javascript } = require('../../syntax')
 let resolveToolRoot = require('../../resolve-tool-root')
 
+let version = require('../../../package.json').version
+
 let { readOutputFile, writeInputFile, cleanupFile, fileExists, removeFile } = require('../../io')({
   output: 'dist',
   input: 'src',
@@ -10,9 +12,23 @@ let { readOutputFile, writeInputFile, cleanupFile, fileExists, removeFile } = re
 
 let EXECUTABLE = 'node ../../lib/cli.js'
 
+function dedent(input) {
+  let lines = input.split('\n')
+
+  let minIndent = lines.reduce(
+    (min, line) => Math.min(min, line.trim() === '' ? Infinity : line.match(/^\s*/)[0].length),
+    Infinity
+  )
+
+  return lines
+    .map((line) => line.slice(minIndent))
+    .join('\n')
+    .trim()
+}
+
 describe('Build command', () => {
   test('--output', async () => {
-    await writeInputFile('index.html', html`<div class="font-bold"></div>`)
+    await writeInputFile('index.html', html`<div class="font-bold shadow"></div>`)
 
     await $(`${EXECUTABLE} --output ./dist/main.css`)
 
@@ -21,16 +37,9 @@ describe('Build command', () => {
     // `-i` is omitted, therefore the default `@tailwind base; @tailwind
     // components; @tailwind utilities` is used. However `preflight` is
     // disabled. I still want to verify that the `base` got included.
-    expect(contents).toIncludeCss(
-      css`
-        *,
-        ::before,
-        ::after {
-          --tw-border-opacity: 1;
-          border-color: rgba(229, 231, 235, var(--tw-border-opacity));
-        }
-      `
-    )
+    expect(contents).toContain('--tw-ring-offset-shadow: 0 0 #0000')
+    expect(contents).toContain('--tw-ring-shadow: 0 0 #0000')
+    expect(contents).toContain('--tw-shadow: 0 0 #0000')
 
     // Verify `utilities` output is correct
     expect(contents).toIncludeCss(
@@ -121,18 +130,13 @@ describe('Build command', () => {
 
     let customConfig = `module.exports = ${JSON.stringify(
       {
-        purge: ['./src/index.html'],
-        mode: 'jit',
-        darkMode: false, // or 'media' or 'class'
+        content: ['./src/index.html'],
         theme: {
           extend: {
             fontWeight: {
               bold: 'BOLD',
             },
           },
-        },
-        variants: {
-          extend: {},
         },
         corePlugins: {
           preflight: false,
@@ -152,6 +156,20 @@ describe('Build command', () => {
       css`
         .font-bold {
           font-weight: BOLD;
+        }
+      `
+    )
+  })
+
+  test('--content', async () => {
+    await writeInputFile('index.html', html`<div class="font-bold"></div>`)
+
+    await $(`${EXECUTABLE} --content ./src/index.html --output ./dist/main.css`)
+
+    expect(await readOutputFile('main.css')).toIncludeCss(
+      css`
+        .font-bold {
+          font-weight: 700;
         }
       `
     )
@@ -198,7 +216,7 @@ describe('Build command', () => {
 
         .btn-after {
           --tw-bg-opacity: 1;
-          background-color: rgba(239, 68, 68, var(--tw-bg-opacity));
+          background-color: rgb(239 68 68 / var(--tw-bg-opacity));
           padding-left: 0.5rem;
           padding-right: 0.5rem;
           padding-top: 0.25rem;
@@ -249,7 +267,7 @@ describe('Build command', () => {
 
         .btn-after {
           --tw-bg-opacity: 1;
-          background-color: rgba(239, 68, 68, var(--tw-bg-opacity));
+          background-color: rgb(239 68 68 / var(--tw-bg-opacity));
           padding-left: 0.5rem;
           padding-right: 0.5rem;
           padding-top: 0.25rem;
@@ -262,27 +280,25 @@ describe('Build command', () => {
   test('--help', async () => {
     let { combined } = await $(`${EXECUTABLE} --help`)
 
-    expect(combined).toMatchInlineSnapshot(`
-      "
-      tailwindcss v2.1.2
+    expect(dedent(combined)).toEqual(
+      dedent(`
+        tailwindcss v${version}
 
-      Usage:
-         tailwindcss build [options]
+        Usage:
+           tailwindcss build [options]
 
-      Options:
-         -i, --input              Input file
-         -o, --output             Output file
-         -w, --watch              Watch for changes and rebuild as needed
-             --jit                Build using JIT mode
-             --purge              Content paths to use for removing unused classes
-             --postcss            Load custom PostCSS configuration
-         -m, --minify             Minify the output
-         -c, --config             Path to a custom config file
-             --no-autoprefixer    Disable autoprefixer
-         -h, --help               Display usage information
-
-      "
-    `)
+        Options:
+           -i, --input              Input file
+           -o, --output             Output file
+           -w, --watch              Watch for changes and rebuild as needed
+               --content            Content paths to use for removing unused classes
+               --postcss            Load custom PostCSS configuration
+           -m, --minify             Minify the output
+           -c, --config             Path to a custom config file
+               --no-autoprefixer    Disable autoprefixer
+           -h, --help               Display usage information
+      `)
+    )
   })
 })
 
@@ -302,34 +318,6 @@ describe('Init command', () => {
     // multiple keys in `theme` exists. However it loads `tailwindcss/colors`
     // which doesn't exists in this context.
     expect((await readOutputFile('../full.config.js')).split('\n').length).toBeGreaterThan(50)
-  })
-
-  test('--jit', async () => {
-    cleanupFile('with-jit.config.js')
-
-    let { combined } = await $(`${EXECUTABLE} init with-jit.config.js --jit`)
-
-    expect(combined).toMatchInlineSnapshot(`
-      "
-      Created Tailwind CSS config file: with-jit.config.js
-      "
-    `)
-
-    expect(await readOutputFile('../with-jit.config.js')).toContain("mode: 'jit'")
-  })
-
-  test('--full, --jit', async () => {
-    cleanupFile('full-with-jit.config.js')
-
-    let { combined } = await $(`${EXECUTABLE} init full-with-jit.config.js --jit --full`)
-
-    expect(combined).toMatchInlineSnapshot(`
-      "
-      Created Tailwind CSS config file: full-with-jit.config.js
-      "
-    `)
-
-    expect(await readOutputFile('../full-with-jit.config.js')).toContain("mode: 'jit'")
   })
 
   test('--postcss', async () => {
@@ -352,20 +340,18 @@ describe('Init command', () => {
   test('--help', async () => {
     let { combined } = await $(`${EXECUTABLE} init --help`)
 
-    expect(combined).toMatchInlineSnapshot(`
-      "
-      tailwindcss v2.1.2
+    expect(dedent(combined)).toEqual(
+      dedent(`
+        tailwindcss v${version}
 
-      Usage:
-         tailwindcss init [options]
+        Usage:
+           tailwindcss init [options]
 
-      Options:
-             --jit                Initialize for JIT mode
-         -f, --full               Initialize a full \`tailwind.config.js\` file
-         -p, --postcss            Initialize a \`postcss.config.js\` file
-         -h, --help               Display usage information
-
-      "
-    `)
+        Options:
+           -f, --full               Initialize a full \`tailwind.config.js\` file
+           -p, --postcss            Initialize a \`postcss.config.js\` file
+           -h, --help               Display usage information
+      `)
+    )
   })
 })

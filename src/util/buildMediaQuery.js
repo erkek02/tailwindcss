@@ -1,33 +1,20 @@
-import _ from 'lodash'
-
 export default function buildMediaQuery(screens) {
-  if (_.isString(screens)) {
-    screens = { min: screens }
-  }
+  screens = Array.isArray(screens) ? screens : [screens]
 
-  if (!Array.isArray(screens)) {
-    screens = [screens]
-  }
+  return screens
+    .map((screen) =>
+      screen.values.map((screen) => {
+        if (screen.raw !== undefined) {
+          return screen.raw
+        }
 
-  return _(screens)
-    .map((screen) => {
-      if (_.has(screen, 'raw')) {
-        return screen.raw
-      }
-
-      return _(screen)
-        .map((value, feature) => {
-          feature = _.get(
-            {
-              min: 'min-width',
-              max: 'max-width',
-            },
-            feature,
-            feature
-          )
-          return `(${feature}: ${value})`
-        })
-        .join(' and ')
-    })
+        return [
+          screen.min && `(min-width: ${screen.min})`,
+          screen.max && `(max-width: ${screen.max})`,
+        ]
+          .filter(Boolean)
+          .join(' and ')
+      })
+    )
     .join(', ')
 }
